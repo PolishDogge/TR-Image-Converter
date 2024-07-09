@@ -1,20 +1,22 @@
 import struct
 from PIL import Image
 import concurrent.futures
-
+import numpy as np
+from zlib import compress, decompress
+import time
 
 DEBUG = False
+
 def rgba_to_hex(rgba):
     r, g, b, a = rgba
     return f"{r:02X}{g:02X}{b:02X}{a:02X}"
 
-def process_chunk(image_path, start_y, end_y):
-    image = Image.open(image_path).convert('RGBA')
-    width, _ = image.size
+def process_chunk(image, start_y, end_y):
+    width = image.shape[1]
     rgba_values = []
     for y in range(start_y, end_y):
         for x in range(width):
-            rgba = image.getpixel((x, y))
+            rgba = tuple(image[y, x])
             if DEBUG:
                 print(f'{x},{y}: {rgba}')
             rgba_values.append((x, y, rgba))
@@ -23,16 +25,18 @@ def process_chunk(image_path, start_y, end_y):
 def convertTR(image_path, output_path, num_threads=8):
     image = Image.open(image_path).convert('RGBA')
     width, height = image.size
+    np_image = np.array(image)
 
     # Calculate chunk size for each thread
     chunk_size = height // num_threads
     futures = []
 
+    start_time = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
         for i in range(num_threads):
             start_y = i * chunk_size
             end_y = height if i == num_threads - 1 else (i + 1) * chunk_size
-            futures.append(executor.submit(process_chunk, image_path, start_y, end_y))
+            futures.append(executor.submit(process_chunk, np_image, start_y, end_y))
 
     # Collect results
     results = [None] * num_threads
@@ -40,6 +44,9 @@ def convertTR(image_path, output_path, num_threads=8):
         start_y, rgba_values = future.result()
         index = start_y // chunk_size
         results[index] = rgba_values
+
+    processing_time = time.time() - start_time
+    print(f"Image processing time: {processing_time:.2f} seconds")
 
     # Flatten the list of results
     ordered_rgba_values = [pixel for sublist in results for pixel in sublist]
@@ -65,29 +72,41 @@ def convertTR(image_path, output_path, num_threads=8):
     # Add the last group of pixels
     compressed_rgba_values.append((current_run_length, start_pixel))
 
-    # Save results to a binary file
+    packing_start_time = time.time()
+    # Pack and compress the data
+    packed_data = b''
+    for count, (x, y, rgba) in compressed_rgba_values:
+        packed_data += struct.pack('IHHBBBB', count, x, y, *rgba)
+
+    compressed_data = compress(packed_data)
+
+    compression_time = time.time() - packing_start_time
+    print(f"Packing and compression time: {compression_time:.2f} seconds")
+
+    # Save compressed data to file
     with open(output_path, 'wb') as f:
-        for count, (x, y, rgba) in compressed_rgba_values:
-            hex_rgba = rgba_to_hex(rgba)
-            packed_data = struct.pack('IHHBBBB', count, x, y, rgba[0], rgba[1], rgba[2], rgba[3])
-            f.write(packed_data)
+        f.write(compressed_data)
 
 def image_from_file(file_path, output_image_path):
     with open(file_path, 'rb') as f:
-        pixels = []
-        max_x, max_y = 0, 0
-        while True:
-            packed_data = f.read(struct.calcsize('IHHBBBB'))
-            if not packed_data:
-                break
-            unpacked_data = struct.unpack('IHHBBBB', packed_data)
-            count, x, y, r, g, b, a = unpacked_data
-            for i in range(count):
-                pixels.append((x + i, y, (r, g, b, a)))
-                if x + i > max_x:
-                    max_x = x + i
-                if y > max_y:
-                    max_y = y
+        compressed_data = f.read()
+
+    packed_data = decompress(compressed_data)
+
+    pixels = []
+    max_x, max_y = 0, 0
+    offset = 0
+    data_size = struct.calcsize('IHHBBBB')
+    while offset < len(packed_data):
+        unpacked_data = struct.unpack('IHHBBBB', packed_data[offset:offset + data_size])
+        offset += data_size
+        count, x, y, r, g, b, a = unpacked_data
+        for i in range(count):
+            pixels.append((x + i, y, (r, g, b, a)))
+            if x + i > max_x:
+                max_x = x + i
+            if y > max_y:
+                max_y = y
 
     width = max_x + 1
     height = max_y + 1
@@ -103,9 +122,10 @@ def image_from_file(file_path, output_image_path):
     image.save(output_image_path)
 
 if __name__ == "__main__":
-    image_path = 'DSC_0071.JPG'
+    image_path = 'img.jpeg'
     output_path = 'file.tr'
     output_image_path = 'reconstructed_image.png'
 
+    startTime = time.time()
     convertTR(image_path, output_path, num_threads=12)
-    #image_from_file(output_path, output_image_path)
+    print(f'Finished in {time.time()-startTime:.2f} seconds')
