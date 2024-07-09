@@ -1,3 +1,7 @@
+# THIS BRANCH HAS WAY GREATER COMPRESSION AT THE COST OF SPEED
+# AVERAGE IMAGE CONVERSION TIME INCRAESED BY 10x (92 seconds -> 929 seconds)
+# The final size has been decreased from 200 MB to 81 MB
+
 import struct
 from PIL import Image
 import numpy as np
